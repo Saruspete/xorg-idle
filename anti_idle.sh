@@ -30,10 +30,14 @@ VAL_VERB=0
 VAL_DAEMON=0
 VAL_IDLE=300
 
+function verb {
+	[ "$VAL_VERB" -gt 0 ]
+}
+
 function window_getid {
 
 	WNDIDS=""
-
+	
 	unset OPTIND
 	unset OPTARG
 	while getopts ":p:P:n:i:" opt $@; do
@@ -45,7 +49,7 @@ function window_getid {
 				;;
 			# By process
 			p)
-				WNDIDS="$WNDIDS $($BIN_XDO search --class $OPTARG)"
+				WNDIDS="$WNDIDS $($BIN_XDO search --class $OPTARG 2>/dev/null)"
 #				echo "Parsed $opt = $OPTARG" >> /dev/stderr
 				;;
 			# By PID
@@ -60,7 +64,7 @@ function window_getid {
 #				echo "Parsed $opt = $OPTARG" >> /dev/stderr
 				;;
 			\?)
-				echo "Wrong window_getids arg : $OPTARG"
+				echo "Wrong window_getids arg : $OPTARG" >&2
 #				echo "Parsed $opt = $OPTARG" >> /dev/stderr
 				exit 2
 				;;
@@ -68,6 +72,7 @@ function window_getid {
 	done
 #	echo "Final : $WNDIDS" >> /dev/stderr
 	echo $WNDIDS
+	
 	[ -n "$WNDIDS" ] && return 0
 	return 1
 }
@@ -93,7 +98,7 @@ function mouse_checkpos {
 }
 
 function mouse_hoverwindow {
-	[ -z "$1" ] && return 1
+	[ -z "$1" ] && return 2
 
 	WND_ID=$1
 	# And the info
@@ -111,22 +116,28 @@ function mouse_hoverwindow {
 	
 	
 	# Check if we are on the good virtual desktop
-	DESK_WND=$($BIN_XDO get_desktop_for_window $WND_ID)
 	DESK_CUR=$($BIN_XDO get_desktop)
+	DESK_WND=$($BIN_XDO get_desktop_for_window $WND_ID 2>/dev/null)
+	
+	# If last window is not visible, skip it
+	[ $? -ne 0 ] && {
+		verb && echo "Window $WND_ID not visible. Skipping"
+		return 254
+	}
 	
 	[ "$DESK_WND" != "$DESK_CUR" ] && {
 		$BIN_XDO set_desktop $DESK_WND
 	}
 	
 	# Move the mouse to hover the window
-	$BIN_XDO mousemove $X+1 $Y+1
+	$BIN_XDO mousemove $X+5 $Y+5
 	
 	# If the window if masked by another, try to move the mouse
 	CNT_X=0
 	CNT_Y=0
 	MAX_X=$(($WND_X + $WND_W))
 	MAX_Y=$(($WND_Y + $WND_H))
-	while [ "$(mouse_checkpos $WND_ID ; echo $?)" != "0" ]; do
+	while ! $(mouse_checkpos $WND_ID); do
 		NEW_X=$(($WND_X+ $CNT_X*$VAL_STEP))
 		NEW_Y=$(($WND_Y+ $CNT_Y*$VAL_STEP))
 
@@ -226,7 +237,6 @@ OTHER_ARGS="-s $VAL_SLEEP -S $VAL_STEP"
 	exit 1
 }
 
-
 while [ 1 ]; do 
 	# If process(es) running
 	_WNDIDS="$(window_getid $WATCH_ARGS)"
@@ -234,18 +244,27 @@ while [ 1 ]; do
 
 		# Found IDs, for each of them
 		for ID in $_WNDIDS; do 
+			
+			typeset -i r=0
 
-			echo "Waking up window $ID"
 			# Are we on the good window
 			mouse_checkpos $ID || {
 				# Can we hover the window
-				mouse_hoverwindow $ID || {
+				mouse_hoverwindow $ID 
+				r=$?
+				[ $r -eq 1 ] && {
 					# If no, try to activate the window, firstscreen
 					$BIN_XDO windowactivate $ID
 					mouse_hoverwindow $ID
+					r=$?
 				}
 			}
-			mouse_move
+			if [ $r -eq 0 ]; then
+				echo "[$(date +'%H:%M:%S')] Waking up window $ID"
+				mouse_move
+			else
+				verb && echo "Window $ID skipped"
+			fi
 		done
 	}
 	sleep $VAL_SLEEP
